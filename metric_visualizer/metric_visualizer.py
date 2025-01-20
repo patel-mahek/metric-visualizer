@@ -16,8 +16,10 @@ from collections import OrderedDict
 
 import findfile
 import matplotlib
+import matplotlib.pyplot as plt
 import natsort
 import pandas as pd
+import seaborn as sns
 from findfile import find_cwd_files
 import numpy as np
 from scipy.stats import ranksums
@@ -178,36 +180,115 @@ class MetricVisualizer:
         """
         self.log_metric(trial_name, metric_name, value, unit)
 
-    def log_metric(self, trial_name=None, metric_name=None, value=0, unit=None):
-        """
-        Add a metric to the metric dict based on the trial name and metric name.
-        :param trial_name: the name of the trial, such as algo names, model names, config names, epochs, etc.
-        :param metric_name: the name of the metric, such as accuracy, loss, f1, etc.
-        :param value: the value of the metric
-        :param unit: the unit of the metric, such as %, ms, etc.
+    def log_metric(self, metric_name, value, epoch):
+        trial_name = f"trial{self.trial_id}"
+        if metric_name not in self.metrics:
+            self.metrics[metric_name] = {}
+        if trial_name not in self.metrics[metric_name]:
+            self.metrics[metric_name][trial_name] = MetricList()
+        self.metrics[metric_name][trial_name].append(value, epoch=epoch)
 
-        :return: None
-        """
-        assert metric_name is not None
+    def log_confusion_matrix(self, cm, class_names, epoch):
+        trial_name = f"trial{self.trial_id}"
+        if "Confusion Matrix" not in self.metrics:
+            self.metrics["Confusion Matrix"] = {}
+        if trial_name not in self.metrics["Confusion Matrix"]:
+            self.metrics["Confusion Matrix"][trial_name] = []
+        self.metrics["Confusion Matrix"][trial_name].append((cm, class_names, epoch))
 
-        # if unit is not None, add the unit to the trial name
-        self.trial2unit[metric_name] = unit
+    def plot_metrics(self, save_path=None, show=True, **kwargs):
+        for metric_name, trial_data in self.metrics.items():
+            if metric_name == "Confusion Matrix":
+                continue  # Handle confusion matrices separately
 
-        # if trial_name is None, use the length of the metric dict as the trial name
-        if trial_name is None:
-            trial_name = "Trial{}".format(
-                len(self.metrics[metric_name]) + 1 if metric_name in self.metrics else 1
-            )
+            plt.figure()
+            for trial_name, metric_list in trial_data.items():
+                epochs = [x[1] for x in metric_list.data]
+                values = [x[0] for x in metric_list.data]
 
-        # add the metric to the metric dict
-        if metric_name in self.metrics:
-            if trial_name not in self.metrics[metric_name]:
-                self.metrics[metric_name][trial_name] = MetricList([value])
-            else:
-                self.metrics[metric_name][trial_name].append(value)
-        else:
-            self.metrics[metric_name] = {trial_name: MetricList([value])}
-        return self
+                plt.plot(epochs, values, label=trial_name, marker='o')
+
+            plt.title(f'{metric_name} vs. Epoch')
+            plt.xlabel('Epoch')
+            plt.ylabel(metric_name)
+            plt.legend()
+            plt.grid(True)
+
+            if save_path:
+                if not os.path.exists(save_path):
+                    os.makedirs(save_path)
+                plt.savefig(f"{save_path}/{metric_name}_vs_epoch.png")
+
+            if show:
+                plt.show()
+            plt.close()
+
+    def plot_confusion_matrices(self, save_path=None, show=True, **kwargs):
+        if "Confusion Matrix" not in self.metrics:
+            return
+
+        for trial_name, cm_data in self.metrics["Confusion Matrix"].items():
+            for cm, class_names, epoch in cm_data:
+                plt.figure(figsize=(8, 8))
+                sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                            xticklabels=class_names, yticklabels=class_names)
+                plt.title(f'Confusion Matrix (Trial: {trial_name}, Epoch: {epoch})')
+                plt.xlabel('Predicted Label')
+                plt.ylabel('True Label')
+                if save_path:
+                    if not os.path.exists(save_path):
+                        os.makedirs(save_path)
+                    plt.savefig(f"{save_path}/confusion_matrix_trial{trial_name}_epoch{epoch}.png")
+                if show:
+                    plt.show()
+                plt.close()
+
+    def summary(self, save_path=None, filename=None, no_print=False, **kwargs):
+        if filename:
+            print("Warning: filename is deprecated, please use save_path instead.")
+
+        table_data, header = self._get_raw_table_data(**kwargs)
+
+        summary_str = tabulate(
+            table_data, headers=header, numalign="center", tablefmt="fancy_grid"
+        )
+        logo = " Raw Metric Records "
+        url = " https://github.com/yangheng95/metric_visualizer "
+        _prefix = (
+            "\n"
+            + "-" * ((len(summary_str.split("\n")[0]) - len(logo)) // 2)
+            + logo
+            + "-" * ((len(summary_str.split("\n")[0]) - len(logo)) // 2)
+            + "\n"
+        )
+
+        _postfix = (
+            "\n"
+            + "-" * ((len(summary_str.split("\n")[0]) - len(url)) // 2)
+            + url
+            + "-" * ((len(summary_str.split("\n")[0]) - len(url)) // 2)
+            + "\n"
+        )
+
+        summary_str = _prefix + summary_str + _postfix
+        if not no_print:
+            print(summary_str)
+
+        if save_path:
+            if not save_path.endswith(".summary.txt"):
+                save_path = save_path + ".summary.txt"
+
+            fout = open(save_path, mode="w", encoding="utf8")
+            summary_str += "\n{}\n".format(str(self.metrics))
+            fout.write(summary_str)
+            fout.close()
+
+            self.dump(save_path.replace(".summary.txt", ".mv"))
+
+        self.plot_metrics(save_path=save_path, show=kwargs.get("show_plots", True))
+        self.plot_confusion_matrices(save_path=save_path, show=kwargs.get("show_plots", True))
+        return summary_str
+
 
     def set_trial_names(self, trial_names):
         """
@@ -264,7 +345,6 @@ class MetricVisualizer:
 
         :return: None
         """
-        import matplotlib.pyplot as plt
 
         plt.cla()
 
